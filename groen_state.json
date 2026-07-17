@@ -1,1 +1,12 @@
-{}
+{
+  "Odense": {
+    "hash": "ff27e2ca4da2cadf421f24aa947151a1cec10f569fb17ecd63a0578860ea448b",
+    "empty": true,
+    "checked": "2026-07-17 20:17:51"
+  },
+  "Valby": {
+    "hash": "e0572cf007315f68ba74c5119764a909d3ed2fc55fbaddea123a55862572d029",
+    "empty": true,
+    "checked": "2026-07-17 20:18:15"
+  }
+}
