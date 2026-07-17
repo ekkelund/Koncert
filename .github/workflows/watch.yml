@@ -1,0 +1,52 @@
+name: Groen Resale Watch
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: groen-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install playwright requests
+          playwright install --with-deps chromium
+
+      - name: Run watcher
+        run: python groen_watch.py
+
+      - name: Persist state
+        run: |
+          git config user.name "groen-bot"
+          git config user.email "groen-bot@users.noreply.github.com"
+          git add groen_state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "state: $(date -u +%FT%TZ)"
+            git pull --rebase origin main || true
+            git push
+          fi
+
+      - name: Upload debug dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_id }}
+          path: debug/
+          retention-days: 2
+          if-no-files-found: ignore
