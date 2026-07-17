@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v5)
+Grøn Koncert Resale Watcher (v6)
 Overvåger Resale-markedspladsen for Odense, Næstved og Valby
 og sender push-notifikation via ntfy.sh, når der kommer billetter til salg.
 
@@ -11,13 +11,15 @@ Detektion (to niveauer, da "Køb Resale"-knappen altid vises i widgetten):
      - Priser/antal (kr/DKK/stk)  -> BILLETTER TIL SALG -> push
      - Ukendt indhold             -> forsigtig push + dump til kalibrering
 
-Kører automatisk via GitHub Actions (se .github/workflows/watch.yml).
+Kører automatisk via GitHub Actions hvert 10. minut, og laver PASSES
+gennemløb pr. kørsel med pause imellem (effektivt ~5 min interval).
 """
 
 import hashlib
 import json
 import os
 import re
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +32,9 @@ URL = "https://groenkoncert.dk/billetter/"
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "groen-ekkelund-billet-7391")
 STATE_FILE = Path(__file__).parent / "groen_state.json"
 DEBUG_DIR = Path(__file__).parent / "debug"
+
+PASSES = int(os.environ.get("PASSES", "2"))            # gennemløb pr. kørsel
+SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "240"))  # sekunder mellem gennemløb
 
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
 WATCH_CITIES = ["Odense", "Næstved", "Valby"]
@@ -216,8 +221,8 @@ def classify(text: str) -> tuple:
     return "unknown", text[-300:]
 
 
-def main() -> None:
-    state = load_state()
+def run_pass(state: dict) -> list:
+    """Ét fuldt gennemløb af alle overvågede byer. Returnerer findings."""
     findings = []
 
     with sync_playwright() as pw:
@@ -269,11 +274,24 @@ def main() -> None:
 
         browser.close()
 
-    save_state(state)
+    return findings
 
-    for city, detail, prio, title in findings:
-        notify(title, f"{detail}\nSe: {URL}", priority=prio)
-        print(f"[{ts()}] NOTIFIKATION SENDT ({prio}): {city}")
+
+def main() -> None:
+    state = load_state()
+
+    for i in range(PASSES):
+        if i > 0:
+            print(f"[{ts()}] Venter {SLEEP_BETWEEN}s før gennemløb {i + 1}/{PASSES}")
+            time.sleep(SLEEP_BETWEEN)
+        print(f"[{ts()}] ── Gennemløb {i + 1}/{PASSES} ──")
+
+        findings = run_pass(state)
+        save_state(state)
+
+        for city, detail, prio, title in findings:
+            notify(title, f"{detail}\nSe: {URL}", priority=prio)
+            print(f"[{ts()}] NOTIFIKATION SENDT ({prio}): {city}")
 
 
 if __name__ == "__main__":
