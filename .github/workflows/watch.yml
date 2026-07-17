@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: groen-watch
@@ -15,23 +16,44 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
+      - name: Auto-nedlukning fra 27. juli
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%Y%m%d)" -ge "20260727" ]; then
+            echo "Valby er afholdt. Deaktiverer workflow permanent."
+            gh api -X PUT repos/${{ github.repository }}/actions/workflows/watch.yml/disable
+            curl -s -H "Title: GRØN-watcher lukket ned" \
+                 -d "Alle tre koncerter er afholdt. Overvågningen har deaktiveret sig selv. God koncert!" \
+                 https://ntfy.sh/groen-ekkelund-billet-7391
+            echo "shutdown=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "shutdown=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.shutdown == 'false'
 
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.shutdown == 'false'
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: steps.guard.outputs.shutdown == 'false'
         run: |
           pip install playwright requests
           playwright install --with-deps chromium
 
       - name: Run watcher
+        if: steps.guard.outputs.shutdown == 'false'
         run: python groen_watch.py
 
       - name: Persist state
+        if: steps.guard.outputs.shutdown == 'false'
         run: |
           git config user.name "groen-bot"
           git config user.email "groen-bot@users.noreply.github.com"
@@ -43,7 +65,7 @@ jobs:
           fi
 
       - name: Upload debug dumps
-        if: always()
+        if: steps.guard.outputs.shutdown == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: debug-${{ github.run_id }}
