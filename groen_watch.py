@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v2)
+Grøn Koncert Resale Watcher (v3)
 Overvåger Resale-markedspladsen for Odense, Næstved og Valby
 og sender push-notifikation via ntfy.sh ved ændringer.
 
@@ -24,7 +24,8 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "groen-ekkelund-billet-7391")
 STATE_FILE = Path(__file__).parent / "groen_state.json"
 DEBUG_DIR = Path(__file__).parent / "debug"
 
-# Byerne står i fast rækkefølge på siden. Resale-knapperne matches på indeks.
+# Alle mulige byer (afviklede koncerter forsvinder løbende fra siden,
+# derfor beregnes rækkefølgen dynamisk ud fra sidens indhold)
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
 WATCH_CITIES = ["Odense", "Næstved", "Valby"]
 
@@ -88,8 +89,57 @@ def dump(name: str, content: str) -> None:
     (DEBUG_DIR / name).write_text(content, encoding="utf-8")
 
 
-def collect_text(page, context) -> str:
-    """Saml tekst fra siden, alle iframes og evt. nyåbnede faner."""
+def dismiss_cookie_banner(page) -> None:
+    """Luk cookie-banneret ved at klikke på selve AFVIS ALLE-knappen."""
+    for attempt in range(3):
+        body = ""
+        try:
+            body = page.inner_text("body")
+        except Exception:
+            pass
+        if "ACCEPTER ALLE" not in body.upper():
+            print(f"[{ts()}] Cookie-banner ikke synligt (forsøg {attempt})")
+            return
+        for finder in [
+            lambda: page.get_by_role("button", name=re.compile("afvis alle", re.I)).first,
+            lambda: page.get_by_role("button", name=re.compile("afvis", re.I)).first,
+            lambda: page.locator("button:has-text('AFVIS')").first,
+            lambda: page.locator("a:has-text('AFVIS ALLE')").first,
+            lambda: page.get_by_role("button", name=re.compile("accepter alle", re.I)).first,
+            lambda: page.locator("button:has-text('ACCEPTER ALLE')").first,
+        ]:
+            try:
+                finder().click(timeout=2500)
+                page.wait_for_timeout(1500)
+                print(f"[{ts()}] Cookie-banner: klik udført")
+                break
+            except Exception:
+                continue
+    # Verificér
+    try:
+        if "ACCEPTER ALLE" in page.inner_text("body").upper():
+            print(f"[{ts()}] ADVARSEL: cookie-banner er muligvis stadig åbent")
+    except Exception:
+        pass
+
+
+def cities_on_page(page) -> list:
+    """Aflæs hvilke byer der aktuelt er på siden, i visningsrækkefølge."""
+    body = page.inner_text("body")
+    start = body.upper().find("KONCERTER")
+    end = body.upper().find("DIVERSE")
+    section = body[start:end] if 0 <= start < end else body
+    found = []
+    for c in ALL_CITIES:
+        m = re.search(rf"(?m)^\s*\+?\s*{re.escape(c.upper())}\s*$", section.upper())
+        if m:
+            found.append((m.start(), c))
+    found.sort()
+    return [c for _, c in found]
+
+
+def collect_text(context) -> str:
+    """Saml tekst fra alle sider og iframes."""
     texts = []
     for p in context.pages:
         try:
@@ -105,38 +155,35 @@ def collect_text(page, context) -> str:
     return "\n\n".join(texts)
 
 
-def check_city(context, page, city: str) -> str:
-    """Klik på byens Resale-knap (matchet på indeks) og returnér al synlig tekst."""
-    idx = ALL_CITIES.index(city)
+def check_city(context, page, city: str, present: list) -> str:
+    """Klik på byens Resale-knap (dynamisk indeks) og returnér al synlig tekst."""
+    idx = present.index(city)
 
     page.goto(URL, wait_until="domcontentloaded")
     page.wait_for_timeout(3000)
+    dismiss_cookie_banner(page)
 
     buttons = page.locator("text=/Køb Resale/i")
     count = buttons.count()
-    print(f"[{ts()}] {city}: fandt {count} resale-knapper på siden (forventer {len(ALL_CITIES)})")
+    print(f"[{ts()}] {city}: fandt {count} resale-knapper (byer på siden: {len(present)}, indeks: {idx})")
     if count == 0:
         raise RuntimeError("Ingen 'Køb Resale'-knapper fundet")
+    if count < len(present):
+        print(f"[{ts()}] ADVARSEL: færre knapper end byer, bruger indeks alligevel")
 
-    # Hvis antallet matcher antal byer, brug indeks. Ellers fallback: nærmeste efter overskrift.
-    if count >= len(ALL_CITIES):
-        target = buttons.nth(idx)
-    else:
-        target = buttons.first
-
+    target = buttons.nth(min(idx, count - 1))
     pages_before = len(context.pages)
     target.scroll_into_view_if_needed(timeout=10000)
     target.click(timeout=10000)
     page.wait_for_timeout(7000)
 
-    combined = collect_text(page, context)
+    combined = collect_text(context)
     dump(f"{slug(city)}.txt", combined)
     try:
         page.screenshot(path=str(DEBUG_DIR / f"{slug(city)}.png"), full_page=False)
     except Exception:
         pass
 
-    # Luk evt. ny fane og modal
     while len(context.pages) > pages_before:
         try:
             context.pages[-1].close()
@@ -169,23 +216,10 @@ def main() -> None:
         page.goto(URL, wait_until="domcontentloaded")
         page.wait_for_timeout(4000)
 
-        # Acceptér cookie-banner hvis det findes
-        for sel in [
-            "#onetrust-accept-btn-handler",
-            "text=/accepter alle/i",
-            "text=/tillad alle/i",
-            "text=/accepter/i",
-            "button:has-text('OK')",
-        ]:
-            try:
-                page.locator(sel).first.click(timeout=2500)
-                print(f"[{ts()}] Cookie-banner lukket via {sel}")
-                page.wait_for_timeout(1000)
-                break
-            except Exception:
-                continue
+        dismiss_cookie_banner(page)
 
-        # Fuldt dump af forsiden til kalibrering
+        present = cities_on_page(page)
+        print(f"[{ts()}] Byer på siden: {present}")
         dump("fullpage.txt", page.inner_text("body"))
         try:
             page.screenshot(path=str(DEBUG_DIR / "fullpage.png"), full_page=True)
@@ -193,8 +227,11 @@ def main() -> None:
             pass
 
         for city in WATCH_CITIES:
+            if city not in present:
+                print(f"[{ts()}] {city}: ikke længere på siden, springer over")
+                continue
             try:
-                text = check_city(context, page, city)
+                text = check_city(context, page, city, present)
             except Exception:
                 print(f"[{ts()}] {city}: FEJL ved tjek")
                 traceback.print_exc()
