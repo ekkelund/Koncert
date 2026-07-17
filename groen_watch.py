@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v4)
+Grøn Koncert Resale Watcher (v5)
 Overvåger Resale-markedspladsen for Odense, Næstved og Valby
 og sender push-notifikation via ntfy.sh, når der kommer billetter til salg.
 
-Detektion baseret på Billetten-widgettens faktiske ordlyd:
-  - Tom markedsplads:  "Ingen resalebilletter tilgængelig pt."
-  - Billetter til salg: "Køb Resale"-knap vises i widgetten
+Detektion (to niveauer, da "Køb Resale"-knappen altid vises i widgetten):
+  1. Widget viser "Ingen resalebilletter tilgængelig pt." -> TOM
+  2. Ellers klikkes "Køb Resale" og selve billetlisten aflæses:
+     - "Ingen resalebilletter..." -> TOM
+     - Priser/antal (kr/DKK/stk)  -> BILLETTER TIL SALG -> push
+     - Ukendt indhold             -> forsigtig push + dump til kalibrering
 
 Kører automatisk via GitHub Actions (se .github/workflows/watch.yml).
 """
@@ -32,6 +35,7 @@ ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "N
 WATCH_CITIES = ["Odense", "Næstved", "Valby"]
 
 EMPTY_PHRASE = "ingen resalebillet"   # matcher "Ingen resalebilletter tilgængelig pt."
+PRICE_PATTERN = re.compile(r"\d[\d.,]*\s*(?:kr|dkk)|\bstk\b|\bantal\b", re.I)
 # ─────────────────────────────────────────────────────────
 
 
@@ -115,22 +119,24 @@ def cities_on_page(page) -> list:
     return [c for _, c in found]
 
 
-def find_widget_text(context) -> str:
-    """Find Billetten-widgettens tekst (iframe med 'GRØN - <BY>')."""
-    best = ""
+def find_widget_frame(context, city: str):
+    """Find frame-objektet for Billetten-widgetten, der viser den givne by."""
+    best = None
+    best_len = 0
     for p in context.pages:
         for frame in p.frames:
             try:
                 t = frame.inner_text("body")
             except Exception:
                 continue
-            if "GRØN -" in t.upper() and len(t) > len(best):
-                best = t
+            if "GRØN -" in t.upper() and city.upper() in t.upper() and len(t) > best_len:
+                best = frame
+                best_len = len(t)
     return best
 
 
-def open_city_widget(context, page, city: str, present: list) -> str:
-    """Åbn byens resale-widget og returnér widget-teksten. Verificerer at det er den rigtige by."""
+def open_city_widget(context, page, city: str, present: list):
+    """Åbn byens resale-widget. Returnér frame-objektet (verificeret på bynavn)."""
     idx = present.index(city)
 
     page.goto(URL, wait_until="domcontentloaded")
@@ -145,14 +151,11 @@ def open_city_widget(context, page, city: str, present: list) -> str:
     if count == 0:
         raise RuntimeError("Ingen 'Køb Resale'-knapper fundet")
 
-    # Prøv header-knappen først, panel-knappen som fallback
     candidates = [idx * per_city + o for o in range(per_city)]
-    widget = ""
     for cand in candidates:
         if cand >= count:
             continue
         target = buttons.nth(cand)
-        pages_before = len(context.pages)
         try:
             target.scroll_into_view_if_needed(timeout=8000)
             target.click(timeout=8000)
@@ -160,44 +163,57 @@ def open_city_widget(context, page, city: str, present: list) -> str:
             print(f"[{ts()}] {city}: klik på knap {cand} fejlede ({e})")
             continue
         page.wait_for_timeout(6000)
-        widget = find_widget_text(context)
 
-        # Ryd op: luk nye faner og modal
-        while len(context.pages) > pages_before:
-            try:
-                context.pages[-1].close()
-            except Exception:
-                break
-        try:
-            page.keyboard.press("Escape")
-        except Exception:
-            pass
-
-        if city.upper() in widget.upper():
-            break
+        frame = find_widget_frame(context, city)
+        if frame is not None:
+            return frame
         print(f"[{ts()}] {city}: widget viste forkert indhold ved knap {cand}, prøver næste")
-        widget = ""
         page.goto(URL, wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
 
-    if not widget:
-        raise RuntimeError(f"Kunne ikke åbne widget for {city}")
-
-    dump(f"{slug(city)}_widget.txt", widget)
-    return widget
+    raise RuntimeError(f"Kunne ikke åbne widget for {city}")
 
 
-def classify(widget: str) -> tuple:
-    """Returnér (status, detaljer). status: 'empty' | 'available'."""
-    low = widget.lower()
+def deep_check(frame, city: str) -> str:
+    """Klik 'Køb Resale' inde i widgetten og returnér billetlistens tekst."""
+    txt = frame.inner_text("body")
+    dump(f"{slug(city)}_widget.txt", txt)
+
+    if EMPTY_PHRASE in txt.lower():
+        return txt  # allerede afgjort: tom
+
+    # Klik på Køb Resale inde i widgetten for at se selve listen
+    try:
+        frame.locator("text=/Køb Resale/i").first.click(timeout=6000)
+    except Exception as e:
+        print(f"[{ts()}] {city}: kunne ikke klikke 'Køb Resale' i widget ({e})")
+        return txt
+
+    frame.page.wait_for_timeout(5000)
+
+    # Frame kan have navigeret; find den igen og læs
+    try:
+        deep = frame.inner_text("body")
+    except Exception:
+        deep = ""
+    if not deep:
+        f2 = find_widget_frame(frame.page.context, city)
+        deep = f2.inner_text("body") if f2 else txt
+
+    dump(f"{slug(city)}_liste.txt", deep)
+    return deep
+
+
+def classify(text: str) -> tuple:
+    """Returnér (status, detaljer). status: 'empty' | 'available' | 'unknown'."""
+    low = text.lower()
     if EMPTY_PHRASE in low:
         return "empty", ""
-    if "køb resale" in low:
-        # Udtræk dato-linjer som detalje, fx "19 søndag - 13:00"
-        lines = [l.strip() for l in widget.splitlines() if l.strip()]
-        detail = " | ".join(lines[-8:])
+    if PRICE_PATTERN.search(low):
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        detail = " | ".join(lines[-10:])
         return "available", detail
-    return "unknown", widget[-300:]
+    return "unknown", text[-300:]
 
 
 def main() -> None:
@@ -229,21 +245,25 @@ def main() -> None:
                 print(f"[{ts()}] {city}: ikke længere på siden, springer over")
                 continue
             try:
-                widget = open_city_widget(context, page, city, present)
+                frame = open_city_widget(context, page, city, present)
+                text = deep_check(frame, city)
             except Exception:
                 print(f"[{ts()}] {city}: FEJL ved tjek")
                 traceback.print_exc()
                 continue
 
-            status, detail = classify(widget)
-            digest = hashlib.sha256(widget.encode()).hexdigest()
+            status, detail = classify(text)
+            digest = hashlib.sha256(text.encode()).hexdigest()
             prev = state.get(city, {})
-            print(f"[{ts()}] {city}: {status.upper()} {('- ' + detail) if detail else ''}")
+            print(f"[{ts()}] {city}: {status.upper()} {('- ' + detail[:200]) if detail else ''}")
 
-            if status == "available" and (prev.get("status") != "available" or prev.get("hash") != digest):
-                findings.append((city, detail))
-            if status == "unknown":
-                print(f"[{ts()}] {city}: ukendt widget-indhold, tjek debug-dump")
+            changed = prev.get("status") != status or prev.get("hash") != digest
+            if status == "available" and changed:
+                findings.append((city, detail, "urgent",
+                                 f"GRØN {city}: Resale-billetter til salg!"))
+            elif status == "unknown" and changed:
+                findings.append((city, detail, "high",
+                                 f"GRØN {city}: Muligvis billetter (ukendt format), tjek selv"))
 
             state[city] = {"status": status, "hash": digest, "checked": ts()}
 
@@ -251,13 +271,9 @@ def main() -> None:
 
     save_state(state)
 
-    for city, detail in findings:
-        notify(
-            f"GRØN {city}: Resale-billetter til salg!",
-            f"Der er billetter på Resale-markedspladsen for {city} lige nu. "
-            f"{detail}\nKøb straks: {URL}",
-        )
-        print(f"[{ts()}] NOTIFIKATION SENDT: {city}")
+    for city, detail, prio, title in findings:
+        notify(title, f"{detail}\nSe: {URL}", priority=prio)
+        print(f"[{ts()}] NOTIFIKATION SENDT ({prio}): {city}")
 
 
 if __name__ == "__main__":
