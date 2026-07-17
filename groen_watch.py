@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v3)
+Grøn Koncert Resale Watcher (v4)
 Overvåger Resale-markedspladsen for Odense, Næstved og Valby
-og sender push-notifikation via ntfy.sh ved ændringer.
+og sender push-notifikation via ntfy.sh, når der kommer billetter til salg.
+
+Detektion baseret på Billetten-widgettens faktiske ordlyd:
+  - Tom markedsplads:  "Ingen resalebilletter tilgængelig pt."
+  - Billetter til salg: "Køb Resale"-knap vises i widgetten
 
 Kører automatisk via GitHub Actions (se .github/workflows/watch.yml).
 """
@@ -24,20 +28,10 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "groen-ekkelund-billet-7391")
 STATE_FILE = Path(__file__).parent / "groen_state.json"
 DEBUG_DIR = Path(__file__).parent / "debug"
 
-# Alle mulige byer (afviklede koncerter forsvinder løbende fra siden,
-# derfor beregnes rækkefølgen dynamisk ud fra sidens indhold)
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
 WATCH_CITIES = ["Odense", "Næstved", "Valby"]
 
-# Tekster der indikerer at der IKKE er billetter (justér efter debug-dumps)
-NO_TICKETS_PATTERNS = [
-    r"ingen\s+billetter",
-    r"ingen\s+resale",
-    r"ikke\s+.*til\s+salg",
-    r"udsolgt",
-    r"no\s+tickets",
-    r"der\s+er\s+i\s+\u00f8jeblikket\s+ingen",
-]
+EMPTY_PHRASE = "ingen resalebillet"   # matcher "Ingen resalebilletter tilgængelig pt."
 # ─────────────────────────────────────────────────────────
 
 
@@ -79,52 +73,35 @@ def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
 
-def looks_empty(text: str) -> bool:
-    low = text.lower()
-    return any(re.search(p, low) for p in NO_TICKETS_PATTERNS)
-
-
 def dump(name: str, content: str) -> None:
     DEBUG_DIR.mkdir(exist_ok=True)
     (DEBUG_DIR / name).write_text(content, encoding="utf-8")
 
 
 def dismiss_cookie_banner(page) -> None:
-    """Luk cookie-banneret ved at klikke på selve AFVIS ALLE-knappen."""
     for attempt in range(3):
-        body = ""
         try:
             body = page.inner_text("body")
         except Exception:
-            pass
+            body = ""
         if "ACCEPTER ALLE" not in body.upper():
-            print(f"[{ts()}] Cookie-banner ikke synligt (forsøg {attempt})")
             return
         for finder in [
             lambda: page.get_by_role("button", name=re.compile("afvis alle", re.I)).first,
             lambda: page.get_by_role("button", name=re.compile("afvis", re.I)).first,
             lambda: page.locator("button:has-text('AFVIS')").first,
             lambda: page.locator("a:has-text('AFVIS ALLE')").first,
-            lambda: page.get_by_role("button", name=re.compile("accepter alle", re.I)).first,
-            lambda: page.locator("button:has-text('ACCEPTER ALLE')").first,
         ]:
             try:
                 finder().click(timeout=2500)
                 page.wait_for_timeout(1500)
-                print(f"[{ts()}] Cookie-banner: klik udført")
+                print(f"[{ts()}] Cookie-banner lukket")
                 break
             except Exception:
                 continue
-    # Verificér
-    try:
-        if "ACCEPTER ALLE" in page.inner_text("body").upper():
-            print(f"[{ts()}] ADVARSEL: cookie-banner er muligvis stadig åbent")
-    except Exception:
-        pass
 
 
 def cities_on_page(page) -> list:
-    """Aflæs hvilke byer der aktuelt er på siden, i visningsrækkefølge."""
     body = page.inner_text("body")
     start = body.upper().find("KONCERTER")
     end = body.upper().find("DIVERSE")
@@ -138,25 +115,22 @@ def cities_on_page(page) -> list:
     return [c for _, c in found]
 
 
-def collect_text(context) -> str:
-    """Saml tekst fra alle sider og iframes."""
-    texts = []
+def find_widget_text(context) -> str:
+    """Find Billetten-widgettens tekst (iframe med 'GRØN - <BY>')."""
+    best = ""
     for p in context.pages:
-        try:
-            texts.append(f"=== PAGE {p.url} ===\n" + p.inner_text("body"))
-        except Exception:
-            pass
         for frame in p.frames:
             try:
-                if frame != p.main_frame:
-                    texts.append(f"=== FRAME {frame.url} ===\n" + frame.inner_text("body"))
+                t = frame.inner_text("body")
             except Exception:
-                pass
-    return "\n\n".join(texts)
+                continue
+            if "GRØN -" in t.upper() and len(t) > len(best):
+                best = t
+    return best
 
 
-def check_city(context, page, city: str, present: list) -> str:
-    """Klik på byens Resale-knap (dynamisk indeks) og returnér al synlig tekst."""
+def open_city_widget(context, page, city: str, present: list) -> str:
+    """Åbn byens resale-widget og returnér widget-teksten. Verificerer at det er den rigtige by."""
     idx = present.index(city)
 
     page.goto(URL, wait_until="domcontentloaded")
@@ -165,36 +139,65 @@ def check_city(context, page, city: str, present: list) -> str:
 
     buttons = page.locator("text=/Køb Resale/i")
     count = buttons.count()
-    print(f"[{ts()}] {city}: fandt {count} resale-knapper (byer på siden: {len(present)}, indeks: {idx})")
+    per_city = max(1, count // len(present))
+    print(f"[{ts()}] {city}: {count} knapper, {len(present)} byer, {per_city} pr. by, indeks {idx}")
+
     if count == 0:
         raise RuntimeError("Ingen 'Køb Resale'-knapper fundet")
-    if count < len(present):
-        print(f"[{ts()}] ADVARSEL: færre knapper end byer, bruger indeks alligevel")
 
-    target = buttons.nth(min(idx, count - 1))
-    pages_before = len(context.pages)
-    target.scroll_into_view_if_needed(timeout=10000)
-    target.click(timeout=10000)
-    page.wait_for_timeout(7000)
-
-    combined = collect_text(context)
-    dump(f"{slug(city)}.txt", combined)
-    try:
-        page.screenshot(path=str(DEBUG_DIR / f"{slug(city)}.png"), full_page=False)
-    except Exception:
-        pass
-
-    while len(context.pages) > pages_before:
+    # Prøv header-knappen først, panel-knappen som fallback
+    candidates = [idx * per_city + o for o in range(per_city)]
+    widget = ""
+    for cand in candidates:
+        if cand >= count:
+            continue
+        target = buttons.nth(cand)
+        pages_before = len(context.pages)
         try:
-            context.pages[-1].close()
-        except Exception:
-            break
-    try:
-        page.keyboard.press("Escape")
-    except Exception:
-        pass
+            target.scroll_into_view_if_needed(timeout=8000)
+            target.click(timeout=8000)
+        except Exception as e:
+            print(f"[{ts()}] {city}: klik på knap {cand} fejlede ({e})")
+            continue
+        page.wait_for_timeout(6000)
+        widget = find_widget_text(context)
 
-    return combined
+        # Ryd op: luk nye faner og modal
+        while len(context.pages) > pages_before:
+            try:
+                context.pages[-1].close()
+            except Exception:
+                break
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+        if city.upper() in widget.upper():
+            break
+        print(f"[{ts()}] {city}: widget viste forkert indhold ved knap {cand}, prøver næste")
+        widget = ""
+        page.goto(URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+
+    if not widget:
+        raise RuntimeError(f"Kunne ikke åbne widget for {city}")
+
+    dump(f"{slug(city)}_widget.txt", widget)
+    return widget
+
+
+def classify(widget: str) -> tuple:
+    """Returnér (status, detaljer). status: 'empty' | 'available'."""
+    low = widget.lower()
+    if EMPTY_PHRASE in low:
+        return "empty", ""
+    if "køb resale" in low:
+        # Udtræk dato-linjer som detalje, fx "19 søndag - 13:00"
+        lines = [l.strip() for l in widget.splitlines() if l.strip()]
+        detail = " | ".join(lines[-8:])
+        return "available", detail
+    return "unknown", widget[-300:]
 
 
 def main() -> None:
@@ -215,53 +218,46 @@ def main() -> None:
         page = context.new_page()
         page.goto(URL, wait_until="domcontentloaded")
         page.wait_for_timeout(4000)
-
         dismiss_cookie_banner(page)
 
         present = cities_on_page(page)
         print(f"[{ts()}] Byer på siden: {present}")
         dump("fullpage.txt", page.inner_text("body"))
-        try:
-            page.screenshot(path=str(DEBUG_DIR / "fullpage.png"), full_page=True)
-        except Exception:
-            pass
 
         for city in WATCH_CITIES:
             if city not in present:
                 print(f"[{ts()}] {city}: ikke længere på siden, springer over")
                 continue
             try:
-                text = check_city(context, page, city, present)
+                widget = open_city_widget(context, page, city, present)
             except Exception:
                 print(f"[{ts()}] {city}: FEJL ved tjek")
                 traceback.print_exc()
                 continue
 
-            snippet = text[-6000:]
-            digest = hashlib.sha256(snippet.encode()).hexdigest()
+            status, detail = classify(widget)
+            digest = hashlib.sha256(widget.encode()).hexdigest()
             prev = state.get(city, {})
+            print(f"[{ts()}] {city}: {status.upper()} {('- ' + detail) if detail else ''}")
 
-            empty = looks_empty(snippet)
-            status = "TOM" if empty else "MULIGE BILLETTER"
-            print(f"[{ts()}] {city}: {status}")
+            if status == "available" and (prev.get("status") != "available" or prev.get("hash") != digest):
+                findings.append((city, detail))
+            if status == "unknown":
+                print(f"[{ts()}] {city}: ukendt widget-indhold, tjek debug-dump")
 
-            if not empty and prev.get("hash") != digest:
-                findings.append(city)
-
-            state[city] = {"hash": digest, "empty": empty, "checked": ts()}
+            state[city] = {"status": status, "hash": digest, "checked": ts()}
 
         browser.close()
 
     save_state(state)
 
-    if findings:
-        cities_str = ", ".join(findings)
+    for city, detail in findings:
         notify(
-            f"GRØN: Mulige resale-billetter — {cities_str}!",
-            f"Der er sket en ændring på Resale-markedspladsen for {cities_str}. "
-            f"Skynd dig ind på {URL}",
+            f"GRØN {city}: Resale-billetter til salg!",
+            f"Der er billetter på Resale-markedspladsen for {city} lige nu. "
+            f"{detail}\nKøb straks: {URL}",
         )
-        print(f"[{ts()}] NOTIFIKATION SENDT: {cities_str}")
+        print(f"[{ts()}] NOTIFIKATION SENDT: {city}")
 
 
 if __name__ == "__main__":
