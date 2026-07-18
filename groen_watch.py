@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v7)
-Overvåger Resale-markedspladsen for Odense, Næstved og Valby
+Grøn Koncert Resale Watcher (v7.1)
+Overvåger Resale-markedspladsen for Aalborg (test), Odense, Næstved og Valby
 og sender push-notifikation via ntfy.sh, når der kommer billetter til salg.
 
 Detektion (to niveauer, da "Køb Resale"-knappen altid vises i widgetten):
@@ -12,6 +12,7 @@ Detektion (to niveauer, da "Køb Resale"-knappen altid vises i widgetten):
      - Ukendt indhold             -> forsigtig push STRAKS + dump
 
 Push sendes i samme sekund en by viser billetter, før de øvrige byer tjekkes.
+Byer der er afholdt forsvinder fra siden og springes automatisk over.
 
 Kører via GitHub Actions. PASSES gennemløb pr. kørsel med SLEEP_BETWEEN
 sekunders pause imellem (styres via env i workflow-filen).
@@ -39,7 +40,7 @@ PASSES = int(os.environ.get("PASSES", "2"))            # gennemløb pr. kørsel
 SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "240"))  # sekunder mellem gennemløb
 
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
-WATCH_CITIES = ["Odense", "Næstved", "Valby"]
+WATCH_CITIES = ["Aalborg", "Odense", "Næstved", "Valby"]
 
 EMPTY_PHRASE = "ingen resalebillet"   # matcher "Ingen resalebilletter tilgængelig pt."
 PRICE_PATTERN = re.compile(r"\d[\d.,]*\s*(?:kr|dkk)|\bstk\b|\bantal\b", re.I)
