@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v6)
+Grøn Koncert Resale Watcher (v7)
 Overvåger Resale-markedspladsen for Odense, Næstved og Valby
 og sender push-notifikation via ntfy.sh, når der kommer billetter til salg.
 
@@ -8,11 +8,13 @@ Detektion (to niveauer, da "Køb Resale"-knappen altid vises i widgetten):
   1. Widget viser "Ingen resalebilletter tilgængelig pt." -> TOM
   2. Ellers klikkes "Køb Resale" og selve billetlisten aflæses:
      - "Ingen resalebilletter..." -> TOM
-     - Priser/antal (kr/DKK/stk)  -> BILLETTER TIL SALG -> push
-     - Ukendt indhold             -> forsigtig push + dump til kalibrering
+     - Priser/antal (kr/DKK/stk)  -> BILLETTER TIL SALG -> push STRAKS
+     - Ukendt indhold             -> forsigtig push STRAKS + dump
 
-Kører automatisk via GitHub Actions hvert 10. minut, og laver PASSES
-gennemløb pr. kørsel med pause imellem (effektivt ~5 min interval).
+Push sendes i samme sekund en by viser billetter, før de øvrige byer tjekkes.
+
+Kører via GitHub Actions. PASSES gennemløb pr. kørsel med SLEEP_BETWEEN
+sekunders pause imellem (styres via env i workflow-filen).
 """
 
 import hashlib
@@ -221,10 +223,8 @@ def classify(text: str) -> tuple:
     return "unknown", text[-300:]
 
 
-def run_pass(state: dict) -> list:
-    """Ét fuldt gennemløb af alle overvågede byer. Returnerer findings."""
-    findings = []
-
+def run_pass(state: dict) -> None:
+    """Ét fuldt gennemløb af alle overvågede byer. Push sendes STRAKS pr. by."""
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(
@@ -263,18 +263,27 @@ def run_pass(state: dict) -> list:
             print(f"[{ts()}] {city}: {status.upper()} {('- ' + detail[:200]) if detail else ''}")
 
             changed = prev.get("status") != status or prev.get("hash") != digest
+
+            # PUSH STRAKS - før næste by tjekkes
             if status == "available" and changed:
-                findings.append((city, detail, "urgent",
-                                 f"GRØN {city}: Resale-billetter til salg!"))
+                notify(
+                    f"GRØN {city}: Resale-billetter til salg!",
+                    f"{detail}\nKøb straks: {URL}",
+                    priority="urgent",
+                )
+                print(f"[{ts()}] NOTIFIKATION SENDT (urgent): {city}")
             elif status == "unknown" and changed:
-                findings.append((city, detail, "high",
-                                 f"GRØN {city}: Muligvis billetter (ukendt format), tjek selv"))
+                notify(
+                    f"GRØN {city}: Muligvis billetter (ukendt format), tjek selv",
+                    f"{detail}\nSe: {URL}",
+                    priority="high",
+                )
+                print(f"[{ts()}] NOTIFIKATION SENDT (high): {city}")
 
             state[city] = {"status": status, "hash": digest, "checked": ts()}
+            save_state(state)
 
         browser.close()
-
-    return findings
 
 
 def main() -> None:
@@ -285,13 +294,8 @@ def main() -> None:
             print(f"[{ts()}] Venter {SLEEP_BETWEEN}s før gennemløb {i + 1}/{PASSES}")
             time.sleep(SLEEP_BETWEEN)
         print(f"[{ts()}] ── Gennemløb {i + 1}/{PASSES} ──")
-
-        findings = run_pass(state)
+        run_pass(state)
         save_state(state)
-
-        for city, detail, prio, title in findings:
-            notify(title, f"{detail}\nSe: {URL}", priority=prio)
-            print(f"[{ts()}] NOTIFIKATION SENDT ({prio}): {city}")
 
 
 if __name__ == "__main__":
