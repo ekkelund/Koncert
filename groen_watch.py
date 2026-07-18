@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v7.1)
-Overvåger Resale-markedspladsen for Aalborg (test), Odense, Næstved og Valby
-og sender push-notifikation via ntfy.sh, når der kommer billetter til salg.
+Grøn Koncert Resale Watcher (v7.2)
+Overvåger Resale-markedspladsen for Aalborg (kun test frem til 18/7 kl. 14 DK),
+Odense, Næstved og Valby og sender push via ntfy.sh ved billetter til salg.
 
 Detektion (to niveauer, da "Køb Resale"-knappen altid vises i widgetten):
   1. Widget viser "Ingen resalebilletter tilgængelig pt." -> TOM
@@ -24,7 +24,7 @@ import os
 import re
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -41,6 +41,11 @@ SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "240"))  # sekunder mellem g
 
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
 WATCH_CITIES = ["Aalborg", "Odense", "Næstved", "Valby"]
+
+# Byer med udløbstid (UTC). Aalborg er kun med som test frem til 18/7 kl. 14:00 dansk tid.
+CITY_DEADLINES_UTC = {
+    "Aalborg": datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc),  # = 14:00 DK
+}
 
 EMPTY_PHRASE = "ingen resalebillet"   # matcher "Ingen resalebilletter tilgængelig pt."
 PRICE_PATTERN = re.compile(r"\d[\d.,]*\s*(?:kr|dkk)|\bstk\b|\bantal\b", re.I)
@@ -247,6 +252,10 @@ def run_pass(state: dict) -> None:
         dump("fullpage.txt", page.inner_text("body"))
 
         for city in WATCH_CITIES:
+            deadline = CITY_DEADLINES_UTC.get(city)
+            if deadline and datetime.now(timezone.utc) >= deadline:
+                print(f"[{ts()}] {city}: udløbet (test-deadline passeret), springer over")
+                continue
             if city not in present:
                 print(f"[{ts()}] {city}: ikke længere på siden, springer over")
                 continue
