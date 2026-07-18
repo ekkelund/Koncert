@@ -2,7 +2,7 @@ name: Groen Resale Watch
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 55
     steps:
       - name: Auto-nedlukning fra 27. juli
         id: guard
@@ -51,6 +51,9 @@ jobs:
       - name: Run watcher
         if: steps.guard.outputs.shutdown == 'false'
         run: python groen_watch.py
+        env:
+          PASSES: "12"
+          SLEEP_BETWEEN: "240"
 
       - name: Persist state
         if: steps.guard.outputs.shutdown == 'false'
