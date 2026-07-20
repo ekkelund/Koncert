@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v7.2)
-Overvåger Resale-markedspladsen for Aalborg (kun test frem til 18/7 kl. 14 DK),
-Odense, Næstved og Valby og sender push via ntfy.sh ved billetter til salg.
+Grøn Koncert Resale Watcher (v8) - tilpasset Billettens NYE webshop-widget (juli 2026)
+Overvåger Resale-markedspladsen for Odense, Næstved og Valby.
 
-Detektion (to niveauer, da "Køb Resale"-knappen altid vises i widgetten):
-  1. Widget viser "Ingen resalebilletter tilgængelig pt." -> TOM
-  2. Ellers klikkes "Køb Resale" og selve billetlisten aflæses:
-     - "Ingen resalebilletter..." -> TOM
-     - Priser/antal (kr/DKK/stk)  -> BILLETTER TIL SALG -> push STRAKS
-     - Ukendt indhold             -> forsigtig push STRAKS + dump
+Ny detektion:
+  - Positivt signal: "N tilgængelige" (N > 0) og/eller billetliste med priser (x.xxx,xx kr)
+  - Tomt signal: "0 tilgængelige", "ingen resalebilletter", eller søgevisning uden fund
+  - Knappen i widgetten hedder nu "Find Resale-billetter" (før: "Køb Resale")
 
 Push sendes i samme sekund en by viser billetter, før de øvrige byer tjekkes.
-Byer der er afholdt forsvinder fra siden og springes automatisk over.
-
-Kører via GitHub Actions. PASSES gennemløb pr. kørsel med SLEEP_BETWEEN
-sekunders pause imellem (styres via env i workflow-filen).
 """
 
 import hashlib
@@ -36,19 +29,17 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "groen-ekkelund-billet-7391")
 STATE_FILE = Path(__file__).parent / "groen_state.json"
 DEBUG_DIR = Path(__file__).parent / "debug"
 
-PASSES = int(os.environ.get("PASSES", "2"))            # gennemløb pr. kørsel
-SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "240"))  # sekunder mellem gennemløb
+PASSES = int(os.environ.get("PASSES", "2"))
+SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "240"))
 
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
-WATCH_CITIES = ["Aalborg", "Odense", "Næstved", "Valby"]
+WATCH_CITIES = ["Odense", "Næstved", "Valby"]
+CITY_DEADLINES_UTC = {}
 
-# Byer med udløbstid (UTC). Aalborg er kun med som test frem til 18/7 kl. 14:00 dansk tid.
-CITY_DEADLINES_UTC = {
-    "Aalborg": datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc),  # = 14:00 DK
-}
-
-EMPTY_PHRASE = "ingen resalebillet"   # matcher "Ingen resalebilletter tilgængelig pt."
-PRICE_PATTERN = re.compile(r"\d[\d.,]*\s*(?:kr|dkk)|\bstk\b|\bantal\b", re.I)
+AVAIL_PATTERN = re.compile(r"\b([1-9]\d*)\s+tilgængelig", re.I)
+ZERO_PATTERN = re.compile(r"\b0\s+tilgængelig|ingen\s+resalebillet|ingen\s+billetter\s+fundet|ingen\s+resultater", re.I)
+PRICE_PATTERN = re.compile(r"\d{1,3}(?:\.\d{3})*,\d{2}\s*kr", re.I)
+WIDGET_BUTTON = re.compile(r"Find Resale|Køb Resale", re.I)
 # ─────────────────────────────────────────────────────────
 
 
@@ -133,7 +124,6 @@ def cities_on_page(page) -> list:
 
 
 def find_widget_frame(context, city: str):
-    """Find frame-objektet for Billetten-widgetten, der viser den givne by."""
     best = None
     best_len = 0
     for p in context.pages:
@@ -142,14 +132,13 @@ def find_widget_frame(context, city: str):
                 t = frame.inner_text("body")
             except Exception:
                 continue
-            if "GRØN -" in t.upper() and city.upper() in t.upper() and len(t) > best_len:
+            if "GRØN" in t.upper() and city.upper() in t.upper() and len(t) > best_len:
                 best = frame
                 best_len = len(t)
     return best
 
 
 def open_city_widget(context, page, city: str, present: list):
-    """Åbn byens resale-widget. Returnér frame-objektet (verificeret på bynavn)."""
     idx = present.index(city)
 
     page.goto(URL, wait_until="domcontentloaded")
@@ -188,49 +177,56 @@ def open_city_widget(context, page, city: str, present: list):
 
 
 def deep_check(frame, city: str) -> str:
-    """Klik 'Køb Resale' inde i widgetten og returnér billetlistens tekst."""
+    """Klik ind til billetlisten i den nye widget og returnér teksten.
+    Klikker op til 2 niveauer: kalender-dato -> 'Find Resale-billetter'."""
     txt = frame.inner_text("body")
     dump(f"{slug(city)}_widget.txt", txt)
 
-    if EMPTY_PHRASE in txt.lower():
-        return txt  # allerede afgjort: tom
-
-    # Klik på Køb Resale inde i widgetten for at se selve listen
-    try:
-        frame.locator("text=/Køb Resale/i").first.click(timeout=6000)
-    except Exception as e:
-        print(f"[{ts()}] {city}: kunne ikke klikke 'Køb Resale' i widget ({e})")
+    # Hvis vi allerede kan afgøre status, stop her
+    if AVAIL_PATTERN.search(txt) or ZERO_PATTERN.search(txt):
         return txt
 
-    frame.page.wait_for_timeout(5000)
+    for level in range(2):
+        try:
+            btn = frame.locator(f"text=/{WIDGET_BUTTON.pattern}/i").first
+            btn.click(timeout=6000)
+        except Exception as e:
+            print(f"[{ts()}] {city}: intet klik på niveau {level + 1} ({e})")
+            break
+        frame.page.wait_for_timeout(5000)
+        try:
+            txt = frame.inner_text("body")
+        except Exception:
+            f2 = find_widget_frame(frame.page.context, city)
+            txt = f2.inner_text("body") if f2 else txt
+        dump(f"{slug(city)}_liste_{level + 1}.txt", txt)
+        if AVAIL_PATTERN.search(txt) or ZERO_PATTERN.search(txt) or PRICE_PATTERN.search(txt):
+            break
 
-    # Frame kan have navigeret; find den igen og læs
-    try:
-        deep = frame.inner_text("body")
-    except Exception:
-        deep = ""
-    if not deep:
-        f2 = find_widget_frame(frame.page.context, city)
-        deep = f2.inner_text("body") if f2 else txt
-
-    dump(f"{slug(city)}_liste.txt", deep)
-    return deep
+    return txt
 
 
 def classify(text: str) -> tuple:
     """Returnér (status, detaljer). status: 'empty' | 'available' | 'unknown'."""
-    low = text.lower()
-    if EMPTY_PHRASE in low:
-        return "empty", ""
-    if PRICE_PATTERN.search(low):
+    zero = ZERO_PATTERN.search(text)
+    avail = AVAIL_PATTERN.search(text)
+    price = PRICE_PATTERN.search(text)
+
+    if avail:
         lines = [l.strip() for l in text.splitlines() if l.strip()]
-        detail = " | ".join(lines[-10:])
-        return "available", detail
+        keep = [l for l in lines if re.search(r"tilgængelig|billet|kr\.|jul\.|normalpris", l, re.I)]
+        detail = " | ".join(keep[:12]) if keep else " | ".join(lines[-10:])
+        return "available", f"{avail.group(1)} tilgængelige - {detail}"
+    if price:
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        keep = [l for l in lines if re.search(r"kr|billet|jul", l, re.I)]
+        return "available", " | ".join(keep[:12])
+    if zero:
+        return "empty", ""
     return "unknown", text[-300:]
 
 
 def run_pass(state: dict) -> None:
-    """Ét fuldt gennemløb af alle overvågede byer. Push sendes STRAKS pr. by."""
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(
@@ -254,7 +250,7 @@ def run_pass(state: dict) -> None:
         for city in WATCH_CITIES:
             deadline = CITY_DEADLINES_UTC.get(city)
             if deadline and datetime.now(timezone.utc) >= deadline:
-                print(f"[{ts()}] {city}: udløbet (test-deadline passeret), springer over")
+                print(f"[{ts()}] {city}: udløbet, springer over")
                 continue
             if city not in present:
                 print(f"[{ts()}] {city}: ikke længere på siden, springer over")
@@ -274,7 +270,6 @@ def run_pass(state: dict) -> None:
 
             changed = prev.get("status") != status or prev.get("hash") != digest
 
-            # PUSH STRAKS - før næste by tjekkes
             if status == "available" and changed:
                 notify(
                     f"GRØN {city}: Resale-billetter til salg!",
