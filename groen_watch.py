@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v10) - kontinuerlig drift, ~60 sek pr. gennemløb
+Grøn Koncert Resale Watcher (v11) - selvstyrende kontinuerlig drift
 Overvåger Resale-markedspladsen for Odense (lydløs), Næstved og Valby (urgent).
+
+Scriptet styrer selv sin køretid: kører gennemløb ryg mod ryg i RUN_MINUTES
+(standard 45) og stopper derefter pænt, så workflow-persist altid når at køre,
+uanset yml-timeout. Ingen env-konfiguration nødvendig.
 
 Detektion i det nye widget-format:
   Kalendervisning:
@@ -10,8 +14,6 @@ Detektion i det nye widget-format:
   Billetliste (efter klik):
     - "N tilgængelige" (N>0) / pris (x xxx,xx kr) -> BILLETTER -> push STRAKS
     - "0 tilgængelige" / "ingen ..."              -> TOM
-
-Kør med env PASSES=60, SLEEP_BETWEEN=0 for kontinuerligt ~minut-tjek.
 """
 
 import hashlib
@@ -32,8 +34,8 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "groen-ekkelund-billet-7391")
 STATE_FILE = Path(__file__).parent / "groen_state.json"
 DEBUG_DIR = Path(__file__).parent / "debug"
 
-PASSES = int(os.environ.get("PASSES", "2"))
-SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "0"))
+# Selvstyrende køretid: ignorerer gamle PASSES/SLEEP_BETWEEN-env bevidst.
+RUN_MINUTES = float(os.environ.get("RUN_MINUTES", "45"))
 
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
 WATCH_CITIES = ["Odense", "Næstved", "Valby"]
@@ -304,21 +306,25 @@ def run_pass(state: dict, browser) -> None:
 
 def main() -> None:
     state = load_state()
+    start = time.monotonic()
+    deadline_s = RUN_MINUTES * 60
+    i = 0
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        for i in range(PASSES):
-            if i > 0 and SLEEP_BETWEEN > 0:
-                print(f"[{ts()}] Venter {SLEEP_BETWEEN}s før gennemløb {i + 1}/{PASSES}")
-                time.sleep(SLEEP_BETWEEN)
-            print(f"[{ts()}] ── Gennemløb {i + 1}/{PASSES} ──")
+        while time.monotonic() - start < deadline_s:
+            i += 1
+            elapsed = (time.monotonic() - start) / 60
+            print(f"[{ts()}] ── Gennemløb {i} (elapsed {elapsed:.1f}/{RUN_MINUTES:.0f} min) ──")
             try:
                 run_pass(state, browser)
             except Exception:
-                print(f"[{ts()}] Gennemløb {i + 1} fejlede, fortsætter")
+                print(f"[{ts()}] Gennemløb {i} fejlede, fortsætter")
                 traceback.print_exc()
             save_state(state)
         browser.close()
+
+    print(f"[{ts()}] Køretid opbrugt efter {i} gennemløb, stopper pænt")
 
 
 if __name__ == "__main__":
