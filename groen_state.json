@@ -1,18 +1,18 @@
 {
   "Odense": {
-    "status": "unknown",
-    "hash": "cc8eceec70cfeddf94f189965fd518112ff4dbc4fab794eea2d28b3631c2f834",
-    "checked": "2026-07-20 22:25:52"
+    "status": "available",
+    "hash": "af9af97e9b36104ab3bc608ef926bf1d7100a8cb335fa8c966b4104cf57d74ae",
+    "checked": "2026-07-20 23:57:54"
   },
   "Valby": {
-    "status": "unknown",
-    "hash": "5b18ad6470080dce20c8942f5dd20593c0ac50d66997bcd838e9151d4e903294",
-    "checked": "2026-07-20 22:26:15"
+    "status": "available",
+    "hash": "04d42030bd156f68c214753ffedd2b41a27c92641389915444d0dd86a5dbc6cc",
+    "checked": "2026-07-20 23:58:14"
   },
   "Næstved": {
-    "status": "unknown",
-    "hash": "89b7011254210ca1036c1d48441dc91b13954d08a5d10df906dd06872f6fadd7",
-    "checked": "2026-07-20 22:26:03"
+    "status": "available",
+    "hash": "e305e9e9785d4b8df9bb129728f00c2b3abcc7a9da912186861e256d9c93b57a",
+    "checked": "2026-07-20 23:58:04"
   },
   "Aalborg": {
     "status": "available",
