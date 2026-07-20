@@ -19,7 +19,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 75
     steps:
       - name: Auto-nedlukning fra 27. juli
         id: guard
