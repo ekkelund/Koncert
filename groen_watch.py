@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v9) - Billettens nye webshop-widget, fuldt kalibreret
+Grøn Koncert Resale Watcher (v10) - kontinuerlig drift, ~60 sek pr. gennemløb
 Overvåger Resale-markedspladsen for Odense (lydløs), Næstved og Valby (urgent).
 
-Detektion i det nye format:
+Detektion i det nye widget-format:
   Kalendervisning:
     - "Køb Resale"-knap ved datoen  -> billetter findes -> deep-check bekræfter
     - Kun "Udsolgt", ingen knap     -> TOM
@@ -11,7 +11,7 @@ Detektion i det nye format:
     - "N tilgængelige" (N>0) / pris (x xxx,xx kr) -> BILLETTER -> push STRAKS
     - "0 tilgængelige" / "ingen ..."              -> TOM
 
-Push-prioritet pr. by: Næstved/Valby = urgent (sirene), Odense = default (stille).
+Kør med env PASSES=60, SLEEP_BETWEEN=0 for kontinuerligt ~minut-tjek.
 """
 
 import hashlib
@@ -33,7 +33,7 @@ STATE_FILE = Path(__file__).parent / "groen_state.json"
 DEBUG_DIR = Path(__file__).parent / "debug"
 
 PASSES = int(os.environ.get("PASSES", "2"))
-SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "240"))
+SLEEP_BETWEEN = int(os.environ.get("SLEEP_BETWEEN", "0"))
 
 ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "Næstved", "Valby"]
 WATCH_CITIES = ["Odense", "Næstved", "Valby"]
@@ -108,8 +108,8 @@ def dismiss_cookie_banner(page) -> None:
             lambda: page.locator("a:has-text('AFVIS ALLE')").first,
         ]:
             try:
-                finder().click(timeout=2500)
-                page.wait_for_timeout(1500)
+                finder().click(timeout=2000)
+                page.wait_for_timeout(1000)
                 print(f"[{ts()}] Cookie-banner lukket")
                 break
             except Exception:
@@ -149,7 +149,7 @@ def open_city_widget(context, page, city: str, present: list):
     idx = present.index(city)
 
     page.goto(URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(3000)
+    page.wait_for_timeout(2000)
     dismiss_cookie_banner(page)
 
     buttons = page.locator("text=/Køb Resale/i")
@@ -166,19 +166,19 @@ def open_city_widget(context, page, city: str, present: list):
             continue
         target = buttons.nth(cand)
         try:
-            target.scroll_into_view_if_needed(timeout=8000)
-            target.click(timeout=8000)
+            target.scroll_into_view_if_needed(timeout=6000)
+            target.click(timeout=6000)
         except Exception as e:
             print(f"[{ts()}] {city}: klik på knap {cand} fejlede ({e})")
             continue
-        page.wait_for_timeout(6000)
+        page.wait_for_timeout(4000)
 
         frame = find_widget_frame(context, city)
         if frame is not None:
             return frame
         print(f"[{ts()}] {city}: widget viste forkert indhold ved knap {cand}, prøver næste")
         page.goto(URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(1500)
 
     raise RuntimeError(f"Kunne ikke åbne widget for {city}")
 
@@ -192,18 +192,17 @@ def deep_check(frame, city: str) -> str:
     if AVAIL_PATTERN.search(txt) or ZERO_PATTERN.search(txt):
         return txt
 
-    # NY REGEL: kalendervisning uden resale-knap = tom markedsplads
     if CALENDAR_MARKERS.search(txt) and not WIDGET_BUTTON.search(txt):
         return txt
 
     for level in range(2):
         try:
             btn = frame.locator(f"text=/{WIDGET_BUTTON.pattern}/i").first
-            btn.click(timeout=6000)
+            btn.click(timeout=5000)
         except Exception as e:
             print(f"[{ts()}] {city}: intet klik på niveau {level + 1} ({e})")
             break
-        frame.page.wait_for_timeout(5000)
+        frame.page.wait_for_timeout(3500)
         try:
             txt = frame.inner_text("body")
         except Exception:
@@ -232,27 +231,25 @@ def classify(text: str) -> tuple:
         return "available", " | ".join(keep[:12])
     if ZERO_PATTERN.search(text):
         return "empty", ""
-    # NY REGEL: kalendervisning uden resale-knap = tom
     if CALENDAR_MARKERS.search(text) and not WIDGET_BUTTON.search(text):
         return "empty", ""
     return "unknown", text[-300:]
 
 
-def run_pass(state: dict) -> None:
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        context = browser.new_context(
-            locale="da-DK",
-            viewport={"width": 1280, "height": 2000},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/126.0 Safari/537.36"
-            ),
-        )
+def run_pass(state: dict, browser) -> None:
+    context = browser.new_context(
+        locale="da-DK",
+        viewport={"width": 1280, "height": 2000},
+        user_agent=(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0 Safari/537.36"
+        ),
+    )
+    try:
         page = context.new_page()
         page.goto(URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(2500)
         dismiss_cookie_banner(page)
 
         present = cities_on_page(page)
@@ -301,20 +298,27 @@ def run_pass(state: dict) -> None:
 
             state[city] = {"status": status, "hash": digest, "checked": ts()}
             save_state(state)
-
-        browser.close()
+    finally:
+        context.close()
 
 
 def main() -> None:
     state = load_state()
 
-    for i in range(PASSES):
-        if i > 0:
-            print(f"[{ts()}] Venter {SLEEP_BETWEEN}s før gennemløb {i + 1}/{PASSES}")
-            time.sleep(SLEEP_BETWEEN)
-        print(f"[{ts()}] ── Gennemløb {i + 1}/{PASSES} ──")
-        run_pass(state)
-        save_state(state)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        for i in range(PASSES):
+            if i > 0 and SLEEP_BETWEEN > 0:
+                print(f"[{ts()}] Venter {SLEEP_BETWEEN}s før gennemløb {i + 1}/{PASSES}")
+                time.sleep(SLEEP_BETWEEN)
+            print(f"[{ts()}] ── Gennemløb {i + 1}/{PASSES} ──")
+            try:
+                run_pass(state, browser)
+            except Exception:
+                print(f"[{ts()}] Gennemløb {i + 1} fejlede, fortsætter")
+                traceback.print_exc()
+            save_state(state)
+        browser.close()
 
 
 if __name__ == "__main__":
