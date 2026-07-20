@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v8) - tilpasset Billettens NYE webshop-widget (juli 2026)
-Overvåger Resale-markedspladsen for Odense, Næstved og Valby.
+Grøn Koncert Resale Watcher (v9) - Billettens nye webshop-widget, fuldt kalibreret
+Overvåger Resale-markedspladsen for Odense (lydløs), Næstved og Valby (urgent).
 
-Ny detektion:
-  - Positivt signal: "N tilgængelige" (N > 0) og/eller billetliste med priser (x.xxx,xx kr)
-  - Tomt signal: "0 tilgængelige", "ingen resalebilletter", eller søgevisning uden fund
-  - Knappen i widgetten hedder nu "Find Resale-billetter" (før: "Køb Resale")
+Detektion i det nye format:
+  Kalendervisning:
+    - "Køb Resale"-knap ved datoen  -> billetter findes -> deep-check bekræfter
+    - Kun "Udsolgt", ingen knap     -> TOM
+  Billetliste (efter klik):
+    - "N tilgængelige" (N>0) / pris (x xxx,xx kr) -> BILLETTER -> push STRAKS
+    - "0 tilgængelige" / "ingen ..."              -> TOM
 
-Push sendes i samme sekund en by viser billetter, før de øvrige byer tjekkes.
+Push-prioritet pr. by: Næstved/Valby = urgent (sirene), Odense = default (stille).
 """
 
 import hashlib
@@ -36,10 +39,14 @@ ALL_CITIES = ["Tårnby", "Kolding", "Aarhus", "Aalborg", "Esbjerg", "Odense", "N
 WATCH_CITIES = ["Odense", "Næstved", "Valby"]
 CITY_DEADLINES_UTC = {}
 
+# Push-prioritet pr. by. urgent = sirene, default = stille notifikation.
+CITY_PRIORITY = {"Odense": "default"}   # øvrige byer = urgent
+
 AVAIL_PATTERN = re.compile(r"\b([1-9]\d*)\s+tilgængelig", re.I)
 ZERO_PATTERN = re.compile(r"\b0\s+tilgængelig|ingen\s+resalebillet|ingen\s+billetter\s+fundet|ingen\s+resultater", re.I)
 PRICE_PATTERN = re.compile(r"\d{1,3}(?:\.\d{3})*,\d{2}\s*kr", re.I)
 WIDGET_BUTTON = re.compile(r"Find Resale|Køb Resale", re.I)
+CALENDAR_MARKERS = re.compile(r"kalender", re.I)
 # ─────────────────────────────────────────────────────────
 
 
@@ -177,13 +184,16 @@ def open_city_widget(context, page, city: str, present: list):
 
 
 def deep_check(frame, city: str) -> str:
-    """Klik ind til billetlisten i den nye widget og returnér teksten.
-    Klikker op til 2 niveauer: kalender-dato -> 'Find Resale-billetter'."""
+    """Aflæs widgetten. Kalender uden 'Køb Resale'-knap = tom (stop der).
+    Ellers klik ind til billetlisten og returnér dens tekst."""
     txt = frame.inner_text("body")
     dump(f"{slug(city)}_widget.txt", txt)
 
-    # Hvis vi allerede kan afgøre status, stop her
     if AVAIL_PATTERN.search(txt) or ZERO_PATTERN.search(txt):
+        return txt
+
+    # NY REGEL: kalendervisning uden resale-knap = tom markedsplads
+    if CALENDAR_MARKERS.search(txt) and not WIDGET_BUTTON.search(txt):
         return txt
 
     for level in range(2):
@@ -208,7 +218,6 @@ def deep_check(frame, city: str) -> str:
 
 def classify(text: str) -> tuple:
     """Returnér (status, detaljer). status: 'empty' | 'available' | 'unknown'."""
-    zero = ZERO_PATTERN.search(text)
     avail = AVAIL_PATTERN.search(text)
     price = PRICE_PATTERN.search(text)
 
@@ -221,7 +230,10 @@ def classify(text: str) -> tuple:
         lines = [l.strip() for l in text.splitlines() if l.strip()]
         keep = [l for l in lines if re.search(r"kr|billet|jul", l, re.I)]
         return "available", " | ".join(keep[:12])
-    if zero:
+    if ZERO_PATTERN.search(text):
+        return "empty", ""
+    # NY REGEL: kalendervisning uden resale-knap = tom
+    if CALENDAR_MARKERS.search(text) and not WIDGET_BUTTON.search(text):
         return "empty", ""
     return "unknown", text[-300:]
 
@@ -269,21 +281,23 @@ def run_pass(state: dict) -> None:
             print(f"[{ts()}] {city}: {status.upper()} {('- ' + detail[:200]) if detail else ''}")
 
             changed = prev.get("status") != status or prev.get("hash") != digest
+            base_prio = CITY_PRIORITY.get(city, "urgent")
 
             if status == "available" and changed:
                 notify(
                     f"GRØN {city}: Resale-billetter til salg!",
                     f"{detail}\nKøb straks: {URL}",
-                    priority="urgent",
+                    priority=base_prio,
                 )
-                print(f"[{ts()}] NOTIFIKATION SENDT (urgent): {city}")
+                print(f"[{ts()}] NOTIFIKATION SENDT ({base_prio}): {city}")
             elif status == "unknown" and changed:
+                unknown_prio = "default" if base_prio == "default" else "high"
                 notify(
                     f"GRØN {city}: Muligvis billetter (ukendt format), tjek selv",
                     f"{detail}\nSe: {URL}",
-                    priority="high",
+                    priority=unknown_prio,
                 )
-                print(f"[{ts()}] NOTIFIKATION SENDT (high): {city}")
+                print(f"[{ts()}] NOTIFIKATION SENDT ({unknown_prio}): {city}")
 
             state[city] = {"status": status, "hash": digest, "checked": ts()}
             save_state(state)
