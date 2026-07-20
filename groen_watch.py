@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-Grøn Koncert Resale Watcher (v11) - selvstyrende kontinuerlig drift
+Grøn Koncert Resale Watcher (v11.1) - selvstyrende kontinuerlig drift
 Overvåger Resale-markedspladsen for Odense (lydløs), Næstved og Valby (urgent).
 
 Scriptet styrer selv sin køretid: kører gennemløb ryg mod ryg i RUN_MINUTES
 (standard 45) og stopper derefter pænt, så workflow-persist altid når at køre,
 uanset yml-timeout. Ingen env-konfiguration nødvendig.
+
+v11.1: find_widget_frame kunne fejlagtigt vælge HOVEDSIDEN i stedet for
+Billetten-widgetten (hovedsiden indeholder også "GRØN" + bynavn og er længere).
+Nu udelukkes main frame eksplicit, så kun rigtige widget-iframes matches.
 
 Detektion i det nye widget-format:
   Kalendervisning:
@@ -133,10 +137,13 @@ def cities_on_page(page) -> list:
 
 
 def find_widget_frame(context, city: str):
+    """Find Billetten-widgettens iframe for byen. Main frame udelukkes altid."""
     best = None
     best_len = 0
     for p in context.pages:
         for frame in p.frames:
+            if frame == p.main_frame:
+                continue
             try:
                 t = frame.inner_text("body")
             except Exception:
