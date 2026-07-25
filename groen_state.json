@@ -7,12 +7,12 @@
   "Valby": {
     "status": "empty",
     "hash": "2a4b07841cae8367bbd225048c0002c1c835452a46b1252590e92a35e9f17399",
-    "checked": "2026-07-25 10:54:41"
+    "checked": "2026-07-25 13:59:38"
   },
   "Næstved": {
-    "status": "empty",
-    "hash": "5febcf795487faa6ec305839767cfde2ce393844992e762ebcc1c7da3bcc7a05",
-    "checked": "2026-07-25 10:54:34"
+    "status": "available",
+    "hash": "9836de4fae47cf2f31b804fdc471bcbc8446d0bb4e7c40be962c318a613bb9ac",
+    "checked": "2026-07-25 13:59:31"
   },
   "Aalborg": {
     "status": "available",
