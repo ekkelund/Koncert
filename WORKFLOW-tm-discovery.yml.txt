@@ -1,0 +1,104 @@
+# ============================================================
+# KOPIÉR HELE INDHOLDET IND I:
+#   .github/workflows/tm-discovery.yml
+#
+# Skal gøres manuelt i GitHub-web-UI'et - Claude-connectoren
+# har ikke skriverettigheder til .github/workflows/ (403).
+#
+#   Repo -> Add file -> Create new file
+#   Filnavn: .github/workflows/tm-discovery.yml
+#   Indsæt alt nedenfor og commit.
+#
+# Kræver secret: TM_API_KEY
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+# ============================================================
+
+name: TM Discovery Watch
+
+on:
+  schedule:
+    - cron: "3 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "diag (ét gennemløb med fuldt feltdump) eller watch (overvågning)"
+        required: true
+        default: "diag"
+        type: choice
+        options:
+          - diag
+          - watch
+  push:
+    branches: [main]
+    paths:
+      - "tm_discovery_watch.py"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tm-discovery
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installér requests
+        run: pip install --quiet requests
+
+      - name: Kør watcher
+        env:
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+          NTFY_TOPIC: tm-ekkelund-billet-4412
+          TM_KEYWORD: The Neighbourhood
+          TM_COUNTRIES: DE,ES
+          TM_LOOP_MINUTES: "50"
+          TM_PASS_INTERVAL: "90"
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then MODE="watch"; fi
+          echo "Mode: $MODE"
+          python tm_discovery_watch.py "$MODE"
+
+      - name: Upload feltdump
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tm-discovery-${{ github.run_id }}
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Commit state
+        if: always()
+        run: |
+          git config user.name "tm-bot"
+          git config user.email "tm-bot@users.noreply.github.com"
+          if [ -n "$(git status --porcelain tm_disc_state.json)" ]; then
+            git add tm_disc_state.json
+            git commit -m "state: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git pull --rebase --autostash origin main || true
+            git push || echo "push fejlede - state gemmes næste gang"
+          else
+            echo "Ingen ændring"
+          fi
+
+      # Auto-nedlukning efter Køln 30. august
+      - name: Luk ned efter koncerten
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%Y%m%d)" -gt "20260831" ]; then
+            echo "Koncerten er overstået - deaktiverer workflow"
+            gh workflow disable "TM Discovery Watch" --repo "${{ github.repository }}" || true
+          fi
