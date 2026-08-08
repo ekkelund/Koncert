@@ -1,0 +1,63 @@
+{
+  "_note": "Universal event-IDs slaaet op via Discovery API 8. august 2026. Bruges som fallback hvis discovery-kaldet svigter. Discovery virker bekraeftet for countryCode=DE og ES; FR gav 0 traef, saa Paris 8/9 (Accor Arena) findes ikke i samme indeks.",
+  "_keyword": "The Neighbourhood",
+  "_target": "Z698xZC2Z16vOZPMuk",
+  "events": [
+    {
+      "id": "Z698xZC2Z1keFAdv0",
+      "date": "2026-08-29",
+      "time": "19:00",
+      "city": "Hamburg",
+      "venue": "Barclays Arena",
+      "name": "The Neighbourhood: THE WOURLD TOUR 2026",
+      "variant": "hovedevent",
+      "priority": 4
+    },
+    {
+      "id": "Z698xZC2Z16vGwQZGI",
+      "date": "2026-08-29",
+      "time": "19:00",
+      "city": "Hamburg",
+      "venue": "Barclays Arena",
+      "name": "The Neighbourhood | Box seat in the Ticketmaster Suite",
+      "variant": "box-seat",
+      "priority": 3
+    },
+    {
+      "id": "Z698xZC2Z16vOZPMuk",
+      "date": "2026-08-30",
+      "time": "19:00",
+      "city": "Cologne",
+      "venue": "LANXESS arena",
+      "name": "The Neighbourhood: THE WOURLD TOUR 2026",
+      "variant": "hovedevent",
+      "priority": 5,
+      "_comment": "PRIMAERT MAAL"
+    },
+    {
+      "id": "Z698xZC2Z16v4dFgaZ",
+      "date": "2026-08-30",
+      "time": "19:00",
+      "city": "Cologne",
+      "venue": "LANXESS arena",
+      "name": "The Neighbourhood: THE WOURLD TOUR 2026 | Box-Seat",
+      "variant": "box-seat",
+      "priority": 4
+    },
+    {
+      "id": "Z698xZ2qZ1kf60z8x",
+      "date": "2026-09-10",
+      "time": "21:00",
+      "city": "Madrid",
+      "venue": "Palacio Vistalegre",
+      "name": "The Neighbourhood: THE WOURLD TOUR",
+      "variant": "hovedevent",
+      "priority": 3
+    }
+  ],
+  "_status_8_aug_2026": {
+    "discovery_api": "VIRKER for DE og ES",
+    "inventory_status_api": "UAFKLARET - browserkald blokeret af CORS/401. Verificeres med curl fra lokal maskine.",
+    "onsale_status_alle_events": "onsale"
+  }
+}
