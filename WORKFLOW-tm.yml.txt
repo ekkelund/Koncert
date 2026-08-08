@@ -1,0 +1,94 @@
+# ============================================================
+# KOPIÉR HELE INDHOLDET AF DENNE FIL IND I:
+#   .github/workflows/tm-watch.yml
+#
+# Skal gøres manuelt i GitHub-web-UI'et - Claude-connectoren
+# har ikke skriverettigheder til .github/workflows/ (403).
+#
+#   Repo -> Add file -> Create new file
+#   Filnavn: .github/workflows/tm-watch.yml
+#   Indsæt alt nedenfor og commit.
+# ============================================================
+
+name: TM Resale Watch
+
+on:
+  schedule:
+    # Hver time. GitHub cron er upålidelig på minuttet, derfor
+    # løber scriptet selv 50 minutter internt pr. kørsel.
+    - cron: "5 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Kørsel: discover (find event-IDs) | diag (rå JSON-dump) | watch (overvågning)"
+        required: true
+        default: "diag"
+        type: choice
+        options:
+          - discover
+          - diag
+          - watch
+  push:
+    branches: [main]
+    paths:
+      - "tm_watch.py"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tm-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installér requests
+        run: pip install --quiet requests
+
+      - name: Kør watcher
+        env:
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+          NTFY_TOPIC: tm-ekkelund-billet-4412
+          TM_KEYWORD: The Neighbourhood
+          TM_COUNTRIES: DE,FR,ES
+          TM_LOOP_MINUTES: "50"
+          TM_PASS_INTERVAL: "60"
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then MODE="watch"; fi
+          echo "Mode: $MODE"
+          python tm_watch.py "$MODE"
+
+      - name: Upload debug-dump
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tm-debug-${{ github.run_id }}
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Commit state-fil
+        if: always()
+        run: |
+          git config user.name "tm-bot"
+          git config user.email "tm-bot@users.noreply.github.com"
+          if [ -n "$(git status --porcelain tm_state.json)" ]; then
+            git add tm_state.json
+            git commit -m "state: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            # Rebase mod origin i tilfælde af parallelle kørsler
+            git pull --rebase --autostash origin main || true
+            git push || echo "push fejlede - state gemmes næste gang"
+          else
+            echo "Ingen ændring i state"
+          fi
